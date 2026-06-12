@@ -110,6 +110,10 @@ impl SharedMemoryBus {
     }
 
     pub fn write_frame(&mut self, state: &GimbalState) {
+        if !state.is_valid() {
+            return;
+        }
+
         if self.mmap.is_none() {
             self.ensure_mmap();
         }
@@ -124,15 +128,22 @@ impl SharedMemoryBus {
 
             self.seq_counter = self.seq_counter.wrapping_add(1);
 
+            let theta_az = sanitize_f64(state.theta_az, -1000.0, 1000.0);
+            let theta_el = sanitize_f64(state.theta_el, -2.0, 2.0);
+            let theta_roll = sanitize_f64(state.theta_roll, -1000.0, 1000.0);
+            let omega_az = sanitize_f64(state.omega_az, -100.0, 100.0);
+            let omega_el = sanitize_f64(state.omega_el, -100.0, 100.0);
+            let omega_roll = sanitize_f64(state.omega_roll, -100.0, 100.0);
+
             unsafe {
                 let frame = &mut *frame_ptr;
                 frame.timestamp_ns = state.timestamp_ns;
-                frame.theta_az = state.theta_az;
-                frame.theta_el = state.theta_el;
-                frame.theta_roll = state.theta_roll;
-                frame.omega_az = state.omega_az;
-                frame.omega_el = state.omega_el;
-                frame.omega_roll = state.omega_roll;
+                frame.theta_az = theta_az;
+                frame.theta_el = theta_el;
+                frame.theta_roll = theta_roll;
+                frame.omega_az = omega_az;
+                frame.omega_el = omega_el;
+                frame.omega_roll = omega_roll;
                 frame.frame_seq = self.seq_counter;
             }
 
@@ -201,3 +212,12 @@ impl Default for SharedMemoryBus {
 
 unsafe impl Send for SharedMemoryBus {}
 unsafe impl Sync for SharedMemoryBus {}
+
+#[inline]
+fn sanitize_f64(value: f64, min: f64, max: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        0.0
+    }
+}

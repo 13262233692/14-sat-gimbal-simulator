@@ -272,14 +272,21 @@ export default function GimbalViewer({ state }: GimbalViewerProps) {
         cur.el += (target.theta_el - cur.el) * lerpFactor;
         cur.roll += (target.theta_roll - cur.roll) * lerpFactor;
 
+        const sanitize = (v: number, fallback: number) =>
+          Number.isFinite(v) ? v : fallback;
+
+        const az = sanitize(cur.az, 0);
+        const el = sanitize(cur.el, 0);
+        const roll = sanitize(cur.roll, 0);
+
         if (azimuthGroupRef.current) {
-          azimuthGroupRef.current.rotation.y = cur.az;
+          azimuthGroupRef.current.rotation.y = az;
         }
         if (elevationGroupRef.current) {
-          elevationGroupRef.current.rotation.x = cur.el;
+          elevationGroupRef.current.rotation.x = el;
         }
         if (rollGroupRef.current) {
-          rollGroupRef.current.rotation.z = cur.roll;
+          rollGroupRef.current.rotation.z = roll;
         }
       }
 
@@ -310,8 +317,16 @@ export default function GimbalViewer({ state }: GimbalViewerProps) {
   }, []);
 
   useEffect(() => {
-    if (state) {
-      targetStateRef.current = state;
+    if (state && isFinite(state.theta_az) && isFinite(state.theta_el) && isFinite(state.theta_roll)) {
+      const clamp = (v: number, min: number, max: number) =>
+        Math.min(Math.max(v, min), max);
+
+      targetStateRef.current = {
+        ...state,
+        theta_az: clamp(state.theta_az, -1000, 1000),
+        theta_el: clamp(state.theta_el, -1.57, 1.57),
+        theta_roll: clamp(state.theta_roll, -1000, 1000),
+      };
     }
   }, [state]);
 
