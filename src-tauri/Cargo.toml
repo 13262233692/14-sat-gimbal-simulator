@@ -1,0 +1,29 @@
+[package]
+name = "sat-gimbal-simulator"
+version = "0.1.0"
+description = "卫星星载转台机械伺服反馈仿真系统"
+authors = ["Aerospace Control Lab"]
+edition = "2021"
+
+[lib]
+name = "sat_gimbal_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.0-beta", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0-beta", features = [] }
+tauri-plugin-shell = "2.0.0-beta"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nalgebra = { version = "0.32", features = ["serde-serialize"] }
+parking_lot = "0.12"
+crossbeam = "0.8"
+memmap2 = "0.9"
+lazy_static = "1.4"
+rand = "0.8"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
