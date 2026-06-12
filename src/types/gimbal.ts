@@ -43,3 +43,24 @@ export interface BusMetadata {
   frame_count: number;
   total_size: number;
 }
+
+export interface LuGreParams {
+  sigma0: number;
+  sigma1: number;
+  sigma2: number;
+  fc: number;
+  fs: number;
+  vs: number;
+  preload: number;
+  stiction_force: number;
+}
+
+export type StickSlipPhase = 'Sticking' | 'Preslip' | 'Sliding' | 'Reversing';
+
+export interface AxisFrictionDiagnostics {
+  friction_torque: number;
+  feedforward_torque: number;
+  stick_slip_phase: StickSlipPhase;
+  zero_crossing_detected: boolean;
+  ff_active: boolean;
+}

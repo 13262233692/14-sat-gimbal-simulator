@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { GimbalState, DisturbanceParams } from '../types/gimbal';
+import type { GimbalState, DisturbanceParams, AxisFrictionDiagnostics, LuGreParams } from '../types/gimbal';
 
 const MAX_CONSECUTIVE_NAN = 5;
 
@@ -40,6 +40,9 @@ export function useGimbal() {
   const [isRunning, setIsRunning] = useState(true);
   const [fps, setFps] = useState(0);
   const [recoveryMode, setRecoveryMode] = useState(false);
+  const [frictionDiagnostics, setFrictionDiagnostics] = useState<AxisFrictionDiagnostics[] | null>(null);
+  const [lugreEnabled, setLugreEnabledState] = useState(true);
+  const [feedforwardEnabled, setFeedforwardEnabledState] = useState(true);
 
   const frameCountRef = useRef(0);
   const lastFpsUpdateRef = useRef(performance.now());
@@ -47,6 +50,7 @@ export function useGimbal() {
   const consecutiveNanRef = useRef(0);
   const lastValidStateRef = useRef<GimbalState | null>(null);
   const recoveryTriggeredRef = useRef(false);
+  const diagFetchCounterRef = useRef(0);
 
   const requestRecoveryReset = useCallback(async () => {
     if (recoveryTriggeredRef.current) return;
@@ -83,6 +87,19 @@ export function useGimbal() {
         }
         if (lastValidStateRef.current) {
           setState(lastValidStateRef.current);
+        }
+      }
+
+      diagFetchCounterRef.current++;
+      if (diagFetchCounterRef.current >= 5) {
+        diagFetchCounterRef.current = 0;
+        try {
+          const diag = await invoke<AxisFrictionDiagnostics[]>('get_friction_diagnostics');
+          if (Array.isArray(diag) && diag.length === 3) {
+            setFrictionDiagnostics(diag);
+          }
+        } catch (e) {
+          // 静默忽略诊断获取失败
         }
       }
     } catch (err) {
@@ -165,15 +182,74 @@ export function useGimbal() {
     }
   }, []);
 
+  const setLugreEnabled = useCallback(async (enabled: boolean) => {
+    try {
+      await invoke('set_lugre_enabled', { enabled });
+      setLugreEnabledState(enabled);
+    } catch (err) {
+      console.error('Failed to set lugre enabled:', err);
+    }
+  }, []);
+
+  const setFeedforwardEnabled = useCallback(async (enabled: boolean) => {
+    try {
+      await invoke('set_feedforward_enabled', { enabled });
+      setFeedforwardEnabledState(enabled);
+    } catch (err) {
+      console.error('Failed to set feedforward enabled:', err);
+    }
+  }, []);
+
+  const setLugreParamsAz = useCallback(async (params: LuGreParams) => {
+    try {
+      await invoke('set_lugre_params_az', { params });
+    } catch (err) {
+      console.error('Failed to set lugre params az:', err);
+    }
+  }, []);
+
+  const setLugreParamsEl = useCallback(async (params: LuGreParams) => {
+    try {
+      await invoke('set_lugre_params_el', { params });
+    } catch (err) {
+      console.error('Failed to set lugre params el:', err);
+    }
+  }, []);
+
+  const setLugreParamsRoll = useCallback(async (params: LuGreParams) => {
+    try {
+      await invoke('set_lugre_params_roll', { params });
+    } catch (err) {
+      console.error('Failed to set lugre params roll:', err);
+    }
+  }, []);
+
+  const setFeedforwardGain = useCallback(async (az: number, el: number, roll: number) => {
+    try {
+      await invoke('set_feedforward_gain', { az, el, roll });
+    } catch (err) {
+      console.error('Failed to set feedforward gain:', err);
+    }
+  }, []);
+
   return {
     state,
     isRunning,
     fps,
     recoveryMode,
+    frictionDiagnostics,
+    lugreEnabled,
+    feedforwardEnabled,
     setTorque,
     setDisturbance,
     resetState,
     startSimulation,
     stopSimulation,
+    setLugreEnabled,
+    setFeedforwardEnabled,
+    setLugreParamsAz,
+    setLugreParamsEl,
+    setLugreParamsRoll,
+    setFeedforwardGain,
   };
 }

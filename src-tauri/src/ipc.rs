@@ -1,4 +1,4 @@
-use crate::dynamics::{DisturbanceParams, GimbalState};
+use crate::dynamics::{DisturbanceParams, GimbalState, LuGreParams, AxisFrictionDiagnostics};
 use crate::shared_bus::BusMetadata;
 use crate::{GIMBAL_STATE, SHARED_BUS};
 
@@ -103,4 +103,69 @@ pub fn stop_simulation() -> Result<(), String> {
 #[tauri::command]
 pub fn set_simulation_rate(hz: u64) -> Result<(), String> {
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_lugre_enabled(enabled: bool) -> Result<(), String> {
+    let mut gimbal = GIMBAL_STATE.lock();
+    gimbal.set_lugre_enabled(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_feedforward_enabled(enabled: bool) -> Result<(), String> {
+    let mut gimbal = GIMBAL_STATE.lock();
+    gimbal.set_feedforward_enabled(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_lugre_params_az(params: LuGreParams) -> Result<(), String> {
+    let mut gimbal = GIMBAL_STATE.lock();
+    gimbal.set_lugre_params_az(sanitize_lugre_params(params));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_lugre_params_el(params: LuGreParams) -> Result<(), String> {
+    let mut gimbal = GIMBAL_STATE.lock();
+    gimbal.set_lugre_params_el(sanitize_lugre_params(params));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_lugre_params_roll(params: LuGreParams) -> Result<(), String> {
+    let mut gimbal = GIMBAL_STATE.lock();
+    gimbal.set_lugre_params_roll(sanitize_lugre_params(params));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_feedforward_gain(az: f64, el: f64, roll: f64) -> Result<(), String> {
+    let clamp = |v: f64| if v.is_finite() { v.clamp(0.0, 10.0) } else { 0.0 };
+    let mut gimbal = GIMBAL_STATE.lock();
+    gimbal.set_feedforward_gain(clamp(az), clamp(el), clamp(roll));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_friction_diagnostics() -> [AxisFrictionDiagnostics; 3] {
+    let gimbal = GIMBAL_STATE.lock();
+    gimbal.get_friction_diagnostics()
+}
+
+fn sanitize_lugre_params(p: LuGreParams) -> LuGreParams {
+    let clamp = |v: f64, min: f64, max: f64| {
+        if v.is_finite() { v.clamp(min, max) } else { min }
+    };
+    LuGreParams {
+        sigma0: clamp(p.sigma0, 100.0, 1e6),
+        sigma1: clamp(p.sigma1, 0.1, 1000.0),
+        sigma2: clamp(p.sigma2, 0.0, 10.0),
+        fc: clamp(p.fc, 0.0, 10.0),
+        fs: clamp(p.fs, 0.0, 20.0),
+        vs: clamp(p.vs, 0.001, 1.0),
+        preload: clamp(p.preload, -10.0, 10.0),
+        stiction_force: clamp(p.stiction_force, 0.0, 20.0),
+    }
 }

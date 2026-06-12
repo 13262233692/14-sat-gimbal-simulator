@@ -2,6 +2,9 @@ use std::ops::{Add, Mul};
 use serde::{Serialize, Deserialize};
 use nalgebra::{Matrix3, UnitQuaternion, Quaternion, Vector3};
 use super::rk4::RK4Integrator;
+use super::lugre::{LuGreParams, LuGreState, ZeroCrossingDetector, FeedforwardCompensator,
+    lugre_z_dot, lugre_friction_force, classify_stick_slip_phase, StickSlipPhase,
+    AxisFrictionDiagnostics};
 use rand::Rng;
 
 const SINGULARITY_THRESHOLD: f64 = 0.087;
@@ -163,6 +166,27 @@ pub struct GimbalDynamics {
     q_transition_start: Option<UnitQuaternion<f64>>,
     q_transition_end: Option<UnitQuaternion<f64>>,
     transition_progress: f64,
+
+    lugre_enabled: bool,
+    feedforward_enabled: bool,
+    lugre_params_az: LuGreParams,
+    lugre_params_el: LuGreParams,
+    lugre_params_roll: LuGreParams,
+    lugre_state_az: LuGreState,
+    lugre_state_el: LuGreState,
+    lugre_state_roll: LuGreState,
+    zc_detector_az: ZeroCrossingDetector,
+    zc_detector_el: ZeroCrossingDetector,
+    zc_detector_roll: ZeroCrossingDetector,
+    ff_compensator_az: FeedforwardCompensator,
+    ff_compensator_el: FeedforwardCompensator,
+    ff_compensator_roll: FeedforwardCompensator,
+    ff_torque_az: f64,
+    ff_torque_el: f64,
+    ff_torque_roll: f64,
+    last_friction_az: f64,
+    last_friction_el: f64,
+    last_friction_roll: f64,
 }
 
 impl GimbalDynamics {
@@ -176,6 +200,17 @@ impl GimbalDynamics {
             omega_roll: 0.0,
             timestamp_ns: 0,
         };
+
+        let mut az_params = LuGreParams::default();
+        let mut el_params = LuGreParams::default();
+        let mut roll_params = LuGreParams::default();
+        az_params.fc = 0.35; az_params.fs = 0.65; az_params.sigma2 = 0.45;
+        az_params.sigma0 = 80000.0; az_params.sigma1 = 280.0; az_params.vs = 0.01;
+        el_params.fc = 0.25; el_params.fs = 0.48; el_params.sigma2 = 0.32;
+        el_params.sigma0 = 90000.0; el_params.sigma1 = 310.0; el_params.vs = 0.008;
+        roll_params.fc = 0.08; roll_params.fs = 0.15; roll_params.sigma2 = 0.12;
+        roll_params.sigma0 = 100000.0; roll_params.sigma1 = 200.0; roll_params.vs = 0.005;
+
         GimbalDynamics {
             state: initial,
             last_valid_state: initial,
@@ -190,6 +225,26 @@ impl GimbalDynamics {
             q_transition_start: None,
             q_transition_end: None,
             transition_progress: 1.0,
+            lugre_enabled: true,
+            feedforward_enabled: true,
+            lugre_params_az: az_params,
+            lugre_params_el: el_params,
+            lugre_params_roll: roll_params,
+            lugre_state_az: LuGreState::default(),
+            lugre_state_el: LuGreState::default(),
+            lugre_state_roll: LuGreState::default(),
+            zc_detector_az: ZeroCrossingDetector::default(),
+            zc_detector_el: ZeroCrossingDetector::default(),
+            zc_detector_roll: ZeroCrossingDetector::default(),
+            ff_compensator_az: FeedforwardCompensator::new(1.8),
+            ff_compensator_el: FeedforwardCompensator::new(1.8),
+            ff_compensator_roll: FeedforwardCompensator::new(1.5),
+            ff_torque_az: 0.0,
+            ff_torque_el: 0.0,
+            ff_torque_roll: 0.0,
+            last_friction_az: 0.0,
+            last_friction_el: 0.0,
+            last_friction_roll: 0.0,
         }
     }
 
@@ -223,11 +278,66 @@ impl GimbalDynamics {
         self.q_transition_start = None;
         self.q_transition_end = None;
         self.transition_progress = 1.0;
+        self.lugre_state_az = LuGreState::default();
+        self.lugre_state_el = LuGreState::default();
+        self.lugre_state_roll = LuGreState::default();
+        self.zc_detector_az.reset();
+        self.zc_detector_el.reset();
+        self.zc_detector_roll.reset();
+        self.ff_compensator_az.reset();
+        self.ff_compensator_el.reset();
+        self.ff_compensator_roll.reset();
+        self.ff_torque_az = 0.0;
+        self.ff_torque_el = 0.0;
+        self.ff_torque_roll = 0.0;
+        self.last_friction_az = 0.0;
+        self.last_friction_el = 0.0;
+        self.last_friction_roll = 0.0;
     }
 
     pub fn set_running(&mut self, r: bool) { self.running = r; }
 
     pub fn get_state(&self) -> GimbalState { self.state }
+
+    pub fn set_lugre_enabled(&mut self, enabled: bool) { self.lugre_enabled = enabled; }
+
+    pub fn set_feedforward_enabled(&mut self, enabled: bool) { self.feedforward_enabled = enabled; }
+
+    pub fn set_lugre_params_az(&mut self, params: LuGreParams) { self.lugre_params_az = params; }
+    pub fn set_lugre_params_el(&mut self, params: LuGreParams) { self.lugre_params_el = params; }
+    pub fn set_lugre_params_roll(&mut self, params: LuGreParams) { self.lugre_params_roll = params; }
+
+    pub fn set_feedforward_gain(&mut self, az: f64, el: f64, roll: f64) {
+        self.ff_compensator_az.gain = az;
+        self.ff_compensator_el.gain = el;
+        self.ff_compensator_roll.gain = roll;
+    }
+
+    pub fn get_friction_diagnostics(&self) -> [AxisFrictionDiagnostics; 3] {
+        [
+            AxisFrictionDiagnostics {
+                friction_torque: self.last_friction_az,
+                feedforward_torque: self.ff_torque_az,
+                stick_slip_phase: classify_stick_slip_phase(self.state.omega_az, &self.lugre_params_az),
+                zero_crossing_detected: self.zc_detector_az.in_crossing_window(),
+                ff_active: self.ff_compensator_az.is_active(),
+            },
+            AxisFrictionDiagnostics {
+                friction_torque: self.last_friction_el,
+                feedforward_torque: self.ff_torque_el,
+                stick_slip_phase: classify_stick_slip_phase(self.state.omega_el, &self.lugre_params_el),
+                zero_crossing_detected: self.zc_detector_el.in_crossing_window(),
+                ff_active: self.ff_compensator_el.is_active(),
+            },
+            AxisFrictionDiagnostics {
+                friction_torque: self.last_friction_roll,
+                feedforward_torque: self.ff_torque_roll,
+                stick_slip_phase: classify_stick_slip_phase(self.state.omega_roll, &self.lugre_params_roll),
+                zero_crossing_detected: self.zc_detector_roll.in_crossing_window(),
+                ff_active: self.ff_compensator_roll.is_active(),
+            },
+        ]
+    }
 
     pub fn step_rk4(&mut self, dt: f64) {
         if !self.running { return; }
@@ -255,13 +365,34 @@ impl GimbalDynamics {
 
         let params = self.params;
         let dist = self.disturbance;
-        let cmd_torque = (self.cmd_torque_az, self.cmd_torque_el, self.cmd_torque_roll);
         let tick = self.tick_counter;
         let prev_state = self.state;
 
+        let lugre_enabled = self.lugre_enabled;
+        let ff_enabled = self.feedforward_enabled;
+        let lugre_p_az = self.lugre_params_az;
+        let lugre_p_el = self.lugre_params_el;
+        let lugre_p_roll = self.lugre_params_roll;
+        let z_az = self.lugre_state_az.z;
+        let z_el = self.lugre_state_el.z;
+        let z_roll = self.lugre_state_roll.z;
+
+        let ff_az = if ff_enabled { self.ff_torque_az } else { 0.0 };
+        let ff_el = if ff_enabled { self.ff_torque_el } else { 0.0 };
+        let ff_roll = if ff_enabled { self.ff_torque_roll } else { 0.0 };
+
+        let cmd_torque = (
+            (self.cmd_torque_az + ff_az).clamp(-params.max_torque_az, params.max_torque_az),
+            (self.cmd_torque_el + ff_el).clamp(-params.max_torque_el, params.max_torque_el),
+            (self.cmd_torque_roll + ff_roll).clamp(-params.max_torque_roll, params.max_torque_roll),
+        );
+
         let derivative = move |s: GimbalState| -> GimbalState {
             let (alpha_az, alpha_el, alpha_roll) = Self::compute_derivatives(
-                s, params, dist, cmd_torque, tick
+                s, params, dist, cmd_torque, tick,
+                lugre_enabled,
+                lugre_p_az, lugre_p_el, lugre_p_roll,
+                z_az, z_el, z_roll,
             );
 
             let mut d_state = GimbalState {
@@ -292,6 +423,52 @@ impl GimbalDynamics {
             self.state.omega_roll *= 0.5;
         }
 
+        if self.lugre_enabled {
+            let zd_az = lugre_z_dot(self.state.omega_az, self.lugre_state_az.z, &self.lugre_params_az);
+            let zd_el = lugre_z_dot(self.state.omega_el, self.lugre_state_el.z, &self.lugre_params_el);
+            let zd_roll = lugre_z_dot(self.state.omega_roll, self.lugre_state_roll.z, &self.lugre_params_roll);
+
+            self.lugre_state_az.z += zd_az * dt;
+            self.lugre_state_el.z += zd_el * dt;
+            self.lugre_state_roll.z += zd_roll * dt;
+
+            self.lugre_state_az.sanitize();
+            self.lugre_state_el.sanitize();
+            self.lugre_state_roll.sanitize();
+
+            self.last_friction_az = lugre_friction_force(self.state.omega_az, self.lugre_state_az.z, &self.lugre_params_az);
+            self.last_friction_el = lugre_friction_force(self.state.omega_el, self.lugre_state_el.z, &self.lugre_params_el);
+            self.last_friction_roll = lugre_friction_force(self.state.omega_roll, self.lugre_state_roll.z, &self.lugre_params_roll);
+        } else {
+            self.last_friction_az = Self::stribeck_friction(self.state.omega_az, params.coulomb_az, params.viscous_az, params.stribeck_az);
+            self.last_friction_el = Self::stribeck_friction(self.state.omega_el, params.coulomb_el, params.viscous_el, params.stribeck_el);
+            self.last_friction_roll = Self::stribeck_friction(self.state.omega_roll, params.coulomb_roll, params.viscous_roll, params.stribeck_roll);
+        }
+
+        let (zc_az, dir_az) = self.zc_detector_az.update(self.state.omega_az, dt);
+        let (zc_el, dir_el) = self.zc_detector_el.update(self.state.omega_el, dt);
+        let (zc_roll, dir_roll) = self.zc_detector_roll.update(self.state.omega_roll, dt);
+
+        if self.feedforward_enabled && self.lugre_enabled {
+            let phase_az = classify_stick_slip_phase(self.state.omega_az, &self.lugre_params_az);
+            let phase_el = classify_stick_slip_phase(self.state.omega_el, &self.lugre_params_el);
+            let phase_roll = classify_stick_slip_phase(self.state.omega_roll, &self.lugre_params_roll);
+
+            self.ff_torque_az = self.ff_compensator_az.update(
+                self.state.omega_az, self.last_friction_az, zc_az, dir_az, phase_az, dt
+            );
+            self.ff_torque_el = self.ff_compensator_el.update(
+                self.state.omega_el, self.last_friction_el, zc_el, dir_el, phase_el, dt
+            );
+            self.ff_torque_roll = self.ff_compensator_roll.update(
+                self.state.omega_roll, self.last_friction_roll, zc_roll, dir_roll, phase_roll, dt
+            );
+        } else {
+            self.ff_torque_az = 0.0;
+            self.ff_torque_el = 0.0;
+            self.ff_torque_roll = 0.0;
+        }
+
         self.state.timestamp_ns = (self.tick_counter as f64 * dt * 1e9) as u64;
     }
 
@@ -308,6 +485,13 @@ impl GimbalDynamics {
         dist: DisturbanceParams,
         cmd: (f64, f64, f64),
         tick: u64,
+        lugre_enabled: bool,
+        lugre_p_az: LuGreParams,
+        lugre_p_el: LuGreParams,
+        lugre_p_roll: LuGreParams,
+        z_az: f64,
+        z_el: f64,
+        z_roll: f64,
     ) -> (f64, f64, f64) {
         let ca = cos(s.theta_el);
         let sa = sin(s.theta_el);
@@ -357,11 +541,18 @@ impl GimbalDynamics {
                 - params.i_roll * s.omega_az * s.omega_el * sa * ca,
         );
 
-        let friction = Vector3::new(
-            Self::stribeck_friction(s.omega_az, params.coulomb_az, params.viscous_az, params.stribeck_az),
-            Self::stribeck_friction(s.omega_el, params.coulomb_el, params.viscous_el, params.stribeck_el),
-            Self::stribeck_friction(s.omega_roll, params.coulomb_roll, params.viscous_roll, params.stribeck_roll),
-        );
+        let friction = if lugre_enabled {
+            let f_az = lugre_friction_force(s.omega_az, z_az, &lugre_p_az);
+            let f_el = lugre_friction_force(s.omega_el, z_el, &lugre_p_el);
+            let f_roll = lugre_friction_force(s.omega_roll, z_roll, &lugre_p_roll);
+            Vector3::new(f_az, f_el, f_roll)
+        } else {
+            Vector3::new(
+                Self::stribeck_friction(s.omega_az, params.coulomb_az, params.viscous_az, params.stribeck_az),
+                Self::stribeck_friction(s.omega_el, params.coulomb_el, params.viscous_el, params.stribeck_el),
+                Self::stribeck_friction(s.omega_roll, params.coulomb_roll, params.viscous_roll, params.stribeck_roll),
+            )
+        };
 
         let r_cp = 0.85;
         let wind_torque = if dist.enable_wind {

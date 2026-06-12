@@ -8,11 +8,20 @@ function App() {
     isRunning,
     fps,
     recoveryMode,
+    frictionDiagnostics,
+    lugreEnabled,
+    feedforwardEnabled,
     setTorque,
     setDisturbance,
     resetState,
     startSimulation,
     stopSimulation,
+    setLugreEnabled,
+    setFeedforwardEnabled,
+    setLugreParamsAz,
+    setLugreParamsEl,
+    setLugreParamsRoll,
+    setFeedforwardGain,
   } = useGimbal();
 
   return (
@@ -51,11 +60,20 @@ function App() {
       <ControlPanel
         state={state}
         isRunning={isRunning}
+        frictionDiagnostics={frictionDiagnostics}
+        lugreEnabled={lugreEnabled}
+        feedforwardEnabled={feedforwardEnabled}
         onSetTorque={setTorque}
         onSetDisturbance={setDisturbance}
         onReset={resetState}
         onStart={startSimulation}
         onStop={stopSimulation}
+        onSetLugreEnabled={setLugreEnabled}
+        onSetFeedforwardEnabled={setFeedforwardEnabled}
+        onSetLugreParamsAz={setLugreParamsAz}
+        onSetLugreParamsEl={setLugreParamsEl}
+        onSetLugreParamsRoll={setLugreParamsRoll}
+        onSetFeedforwardGain={setFeedforwardGain}
       />
     </div>
   );

@@ -37,6 +37,13 @@ pub fn run() {
             ipc::start_simulation,
             ipc::stop_simulation,
             ipc::set_simulation_rate,
+            ipc::set_lugre_enabled,
+            ipc::set_feedforward_enabled,
+            ipc::set_lugre_params_az,
+            ipc::set_lugre_params_el,
+            ipc::set_lugre_params_roll,
+            ipc::set_feedforward_gain,
+            ipc::get_friction_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
